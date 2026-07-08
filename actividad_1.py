@@ -21,11 +21,6 @@ st.markdown("""
         0% { transform: scale(0.95); opacity: 0; }
         100% { transform: scale(1); opacity: 1; }
     }
-    @keyframes crownPulse {
-        0% { transform: scale(1); }
-        50% { transform: scale(1.1); }
-        100% { transform: scale(1); }
-    }
     .main-title {
         color: #1E3A8A;
         font-size: 42px;
@@ -104,6 +99,7 @@ st.markdown("""
 # --- ALMACENAMIENTO DE RANKING GLOBAL (COMPARTIDO ENTRE ALUMNOS) ---
 @st.cache_resource
 def obtener_ranking_global():
+    # Estructura: { "Nombre": {"puntos": 0, "pregunta_actual": 1} }
     return {}
 
 ranking_global = obtener_ranking_global()
@@ -141,7 +137,7 @@ if st.session_state.usuario == "":
             if nombre_ingresado.strip() != "":
                 st.session_state.usuario = nombre_ingresado.strip()
                 if st.session_state.usuario not in ranking_global:
-                    ranking_global[st.session_state.usuario] = 0
+                    ranking_global[st.session_state.usuario] = {"puntos": 0, "pregunta_actual": 1}
                 st.rerun()
             else:
                 st.warning("Por favor, introduce un nombre válido para poder armar el ranking.")
@@ -226,6 +222,11 @@ else:
 
     current_step = st.session_state.pregunta_actual
 
+    # Asegurar que el estado del alumno esté siempre sincronizado en la memoria compartida
+    if st.session_state.usuario in ranking_global:
+        ranking_global[st.session_state.usuario]["pregunta_actual"] = current_step
+        ranking_global[st.session_state.usuario]["puntos"] = st.session_state.puntaje
+
     # Layout de columnas: Izquierda para juego, Derecha para el Ranking en vivo
     col_juego, col_ranking = st.columns([2, 1])
 
@@ -234,7 +235,7 @@ else:
             datos = preguntas[current_step]
             
             st.markdown(f"<div class='pregunta-container'>", unsafe_allow_html=True)
-            st.markdown(f"<div class='etapa-header'>{datos['titulo']} (Jugador: {st.session_state.usuario})</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='etapa-header'>Pregunta {current_step} de {len(preguntas)} (Jugador: {st.session_state.usuario})</div>", unsafe_allow_html=True)
             
             with st.container():
                 st.markdown(f"""
@@ -255,19 +256,21 @@ else:
                     if seleccion == datos["correcta"]:
                         st.session_state.correcto = True
                         st.session_state.puntaje += 1
-                        ranking_global[st.session_state.usuario] = st.session_state.puntaje
+                        ranking_global[st.session_state.usuario]["puntos"] = st.session_state.puntaje
                     else:
                         st.session_state.correcto = False
                 
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            # Lógica de Feedbacks y Penalización de 5 segundos corregida
+            # Lógica de Feedbacks y Penalización de 5 segundos
             if st.session_state.validado:
                 if st.session_state.correcto:
                     st.success(datos["feedback_ok"])
                     st.markdown("<div class='btn-siguiente'>", unsafe_allow_html=True)
                     if st.button("Siguiente ➡️", key=f"sig_{current_step}"):
                         st.session_state.pregunta_actual += 1
+                        # Actualizar avance antes del rerun
+                        ranking_global[st.session_state.usuario]["pregunta_actual"] = st.session_state.pregunta_actual
                         st.session_state.validado = False
                         st.session_state.correcto = False
                         st.rerun()
@@ -295,8 +298,47 @@ else:
                 st.session_state.validado = False
                 st.session_state.correcto = False
                 st.session_state.puntaje = 0
+                ranking_global[st.session_state.usuario] = {"puntos": 0, "pregunta_actual": 1}
                 st.rerun()
 
-    # --- COLUMNA DE RANKING EN VIVO ---
+    # --- COLUMNA DE RANKING EN VIVO (CON PARTICIPANTES Y AVANCE REAL) ---
     with col_ranking:
         st.markdown("<h3 style='text-align: center; color: #1E3A8A; margin-top:15px;'>📊 Tabla de Posiciones</h3>", unsafe_allow_html=True)
+        
+        if ranking_global:
+            # Encontrar el puntaje máximo actual
+            max_puntos = max(user_data["puntos"] for user_data in ranking_global.values())
+            
+            # Construir la lista plana para el DataFrame procesando los datos
+            filas_ranking = []
+            for usuario, info in ranking_global.items():
+                # Si el usuario ya terminó el juego, mostrar "Completado", sino el número de pregunta
+                progreso = "Completado 🎉" if info["pregunta_actual"] > len(preguntas) else f"Pregunta {info['pregunta_actual']}"
+                filas_ranking.append({
+                    "Alumno/Alias": usuario,
+                    "Correctas": info["puntos"],
+                    "Avance": progreso
+                })
+            
+            # Convertir a DataFrame y ordenar por Correctas (descendiente)
+            df_ranking = pd.DataFrame(filas_ranking)
+            df_ranking = df_ranking.sort_values(by="Correctas", ascending=False).reset_index(drop=True)
+            df_ranking.index = df_ranking.index + 1
+            
+            # Agregar la corona visual al líder o líderes en el DataFrame de visualización
+            datos_estilizados = []
+            for idx, row in df_ranking.iterrows():
+                nombre = row["Alumno/Alias"]
+                if row["Correctas"] == max_puntos and max_puntos > 0:
+                    nombre = f"👑 {nombre}"
+                datos_estilizados.append([nombre, row["Correctas"], row["Avance"]])
+                    
+            df_mostrar = pd.DataFrame(datos_estilizados, columns=["Alumno/Alias", "Correctas", "Avance"], index=df_ranking.index)
+            
+            # Mostrar la tabla estilizada e interactiva
+            st.dataframe(df_mostrar, use_container_width=True)
+            
+            if st.button("🔄 Actualizar Tabla"):
+                st.rerun()
+        else:
+            st.info("Aún no hay registros en el ranking.")
